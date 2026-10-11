@@ -1,69 +1,140 @@
+```js
 const mineflayer = require('mineflayer');
 
+const CONFIG = {
+  host: process.env.MC_HOST || 'skybots.aternos.me',
+  port: Number(process.env.MC_PORT || 22612),
+  username: process.env.MC_USERNAME || 'Raboot_356',
+  reconnectDelay: 25000,
+  activityInterval: 45000
+};
+
+let bot = null;
+let reconnectTimer = null;
+let activityTimer = null;
+let stopping = false;
+let busy = false;
+
 function createBot() {
-    const bot = mineflayer.createBot({
-        host: 'skybots.aternos.me', // <--- REEMPLAZA ESTO POR LA IP DE TU SERVER
-        port: 22612,                // Puerto predeterminado de Minecraft
-        username: 'npc-bot-24/7',    // Nombre genérico del bot/NPC dentro del juego
-        version: false              // Autodetecta la versión exacta del servidor (1.8 a 1.21+)
+  if (stopping) return;
+
+  console.log(`[Bot] Conectando a ${CONFIG.host}:${CONFIG.port}...`);
+
+  try {
+    bot = mineflayer.createBot({
+      host: CONFIG.host,
+      port: CONFIG.port,
+      username: CONFIG.username
+      // Mineflayer intentará detectar automáticamente la versión.
     });
+  } catch (error) {
+    console.error('[Bot] No se pudo crear la conexión:', error.message);
+    scheduleReconnect();
+    return;
+  }
 
-    bot.on('spawn', () => {
-        console.log(`[NPC] El bot ha aparecido correctamente en el mapa.`);
-        // Si tu servidor No-Premium requiere contraseña, descomenta la línea de abajo:
-        // setTimeout(() => bot.chat('/login erickJKN'), 4000);
-    });
+  bot.on('login', () => {
+    console.log('[Bot] Inicio de sesión completado.');
+  });
 
-    bot.on('login', () => {
-        console.log(`[NPC] Conexión establecida con el servidor de Minecraft.`);
-    });
+  bot.on('spawn', () => {
+    console.log('[Bot] Apareció en el mundo.');
 
-    // Rutina automatizada del NPC: Buscar cofre, interactuar, cerrar y saltar (Cada 45 segundos)
-    setInterval(async () => {
-        if (!bot || !bot.entity) return;
+    clearInterval(activityTimer);
+    activityTimer = setInterval(runActivity, CONFIG.activityInterval);
+  });
 
-        try {
-            // 1. Localizar el bloque de cofre en un radio de 5 bloques
-            const chestBlock = bot.findBlock({
-                matching: bot.registry.blocksByName.chest.id,
-                maxDistance: 5
-            });
+  bot.on('kicked', (reason) => {
+    console.log('[Bot] Expulsado del servidor:', reason);
+  });
 
-            if (chestBlock) {
-                console.log('[NPC] Interactuando con el contenedor cercano...');
-                
-                // 2. Abrir el contenedor (genera la animación y sonido físico en el servidor)
-                const chest = await bot.openChest(chestBlock);
-                console.log('[NPC] Contenedor abierto.');
-                
-                // Mantener la interfaz abierta durante 2 segundos simulando actividad de inventario
-                await new Promise(resolve => setTimeout(resolve, 2000));
-                
-                // 3. Cerrar la interfaz del contenedor
-                chest.close();
-                console.log('[NPC] Contenedor cerrado.');
-            } else {
-                console.log('[NPC] Aviso: No se detectó ningún contenedor válido cerca.');
-            }
+  bot.on('error', (error) => {
+    console.error('[Bot] Error de conexión:', error.message);
+  });
 
-            // 4. Ejecutar acción de salto físico para evitar la inactividad (Anti-AFK)
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            bot.setControlState('jump', true);
-            setTimeout(() => bot.setControlState('jump', false), 500);
-            console.log('[NPC] Acción anti-inactividad completada con éxito.');
+  bot.on('end', (reason) => {
+    console.log('[Bot] Conexión cerrada:', reason || 'sin motivo indicado');
 
-        } catch (err) {
-            console.log(`[NPC] Error en el ciclo de ejecución: ${err.message}`);
-        }
-    }, 45000);
+    clearInterval(activityTimer);
+    activityTimer = null;
+    busy = false;
+    bot = null;
 
-    // Sistema de auto-reconexión segura tras expulsiones o reinicios del servidor
-    bot.on('end', (reason) => {
-        console.log(`[NPC] Conexión finalizada por: ${reason}. Reintentando en 25 segundos...`);
-        setTimeout(createBot, 25000);
-    });
-
-    bot.on('error', (err) => console.log(`[NPC] Error crítico de red detectado: ${err}`));
+    scheduleReconnect();
+  });
 }
 
+function scheduleReconnect() {
+  if (stopping || reconnectTimer) return;
+
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    createBot();
+  }, CONFIG.reconnectDelay);
+}
+
+async function runActivity() {
+  if (!bot || !bot.entity || busy || stopping) return;
+
+  busy = true;
+
+  try {
+    const chestId = bot.registry.blocksByName.chest?.id;
+
+    if (chestId !== undefined) {
+      const chestBlock = bot.findBlock({
+        matching: chestId,
+        maxDistance: 5
+      });
+
+      if (chestBlock) {
+        console.log('[Bot] Cofre cercano encontrado.');
+
+        const chest = await bot.openChest(chestBlock);
+
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        chest.close();
+        console.log('[Bot] Cofre cerrado.');
+      } else {
+        console.log('[Bot] No hay cofres normales cerca.');
+      }
+    }
+
+    // Salto breve: puede no funcionar en zonas protegidas
+    // y no garantiza que el servidor considere activa la sesión.
+    if (bot && bot.entity) {
+      bot.setControlState('jump', true);
+      await new Promise(resolve => setTimeout(resolve, 300));
+      bot.setControlState('jump', false);
+    }
+  } catch (error) {
+    console.error('[Bot] Error durante la rutina:', error.message);
+
+    if (bot) {
+      try {
+        bot.setControlState('jump', false);
+      } catch {}
+    }
+  } finally {
+    busy = false;
+  }
+}
+
+function shutdown() {
+  stopping = true;
+  clearInterval(activityTimer);
+  clearTimeout(reconnectTimer);
+
+  if (bot) {
+    bot.quit('Bot detenido');
+  }
+
+  process.exit(0);
+}
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
+
 createBot();
+```
