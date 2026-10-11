@@ -1,24 +1,33 @@
-name: Minecraft NPC Bot 24/7
+
+name: Minecraft Bot
 
 on:
-  push:
-    branches: [ main ]
-  workflow_dispatch: # Permite encender el NPC de forma manual desde el panel web
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    timeout-minutes: 350
+
     steps:
-    - name: Clonar repositorio
-      uses: actions/checkout@v4
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
 
-    - name: Configurar Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: 18
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
 
-    - name: Instalar dependencias de Mineflayer
-      run: npm install mineflayer
+      - name: Instalar dependencias
+        run: npm ci
 
-    - name: Ejecutar script del NPC
-      run: node bot.js
+      - name: Ejecutar bot
+        run: node bot.js
+        env:
+          MC_HOST: ${{ vars.MC_HOST }}
+          MC_PORT: ${{ vars.MC_PORT }}
+          MC_USERNAME: ${{ vars.MC_USERNAME }}
